@@ -13,6 +13,21 @@ Design, layout, modes and the gotchas (why the Mode button can't be held,
 why Dictation needs a custom shortcut) are in
 [`docs/architecture/minikeyboard.md`](docs/architecture/minikeyboard.md).
 
+## Hardware
+
+The pad used here:
+[6-key + knob CH57x macro pad on AliExpress](https://www.aliexpress.com/item/1005008160436349.html).
+It shows up as USB `1189:8890` and flashes as `model: ch57x-2`.
+
+Its vendor software is Windows-only, but you don't need it:
+`ch57x-keyboard-tool` (below) programs it from macOS.
+
+Things we learnt:
+- macOS and apps like BetterDisplay grab F14 and F15 for screen brightness,
+  so the pad doesn't send them.
+- One switch had a bent pin and sent nothing. If a single button is dead
+  after flashing, check the switch before blaming the config.
+
 ## Setup
 
 1. Flash the pad:
