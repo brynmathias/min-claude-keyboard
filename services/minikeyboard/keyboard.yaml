@@ -1,0 +1,16 @@
+# Flash with:  ch57x-keyboard-tool upload < keyboard.yaml
+# Every control sends a "blank" key. Hammerspoon (init.lua) decides what it does.
+model: ch57x-2
+orientation: normal
+rows: 2
+columns: 3
+knobs: 1
+layers:
+  - buttons:
+      # F14/F15 are avoided: macOS uses them for screen brightness.
+      - ["f13", "f18", "ctrl-alt-f16"]   # Talk, Yes, No
+      - ["f16", "f17", "ctrl-alt-f19"]   # Clear, A, Mode
+    knobs:
+      - ccw: "f19"              # up / scroll up
+        press: "ctrl-alt-f20"   # select
+        cw: "f20"               # down / scroll down
