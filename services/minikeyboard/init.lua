@@ -3,6 +3,7 @@
 -- Design: docs/architecture/minikeyboard.md
 
 local SETTINGS_KEY = "minikeyboard.mode"
+local SHOW_LEGEND = true -- menu bar shows what buttons 1–5 do in the current mode
 local TALK_REPEAT_SECONDS = 0.03 -- Claude Code detects "hold" via key repeat
 -- What holding Talk does is per mode (`talk` field, default "dictation"):
 --   "dictation" = macOS Dictation, works in any app (see DICTATION_SHORTCUT).
@@ -13,13 +14,23 @@ local function tap(mods, key)
   return function() hs.eventtap.keyStroke(mods, key, 0) end
 end
 
+-- Media/system keys (volume, play, brightness). Behaves like the keyboard's
+-- own keys, including the on-screen HUD.
+local function systemKey(name)
+  return function()
+    hs.eventtap.event.newSystemKeyEvent(name, true):post()
+    hs.eventtap.event.newSystemKeyEvent(name, false):post()
+  end
+end
+
 local function scroll(lines)
   return function() hs.eventtap.scrollWheel({ 0, lines }, {}, "line") end
 end
 
 -- Clear typed text. Depends on the app in front, not the mode, so it does
 -- the right thing even if the pad is in the "wrong" mode.
--- In a terminal, Ctrl+L is Claude Code's built-in chat:clearInput.
+-- In a terminal (Claude Code), kill line by line; see clearText.
+local CLEAR_MAX_LINES = 12
 -- Elsewhere: select all, then delete.
 local TERMINALS = {
   ["iTerm2"] = true, ["Terminal"] = true, ["Ghostty"] = true,
@@ -29,7 +40,15 @@ local TERMINALS = {
 local function clearText()
   local app = hs.application.frontmostApplication()
   if app and TERMINALS[app:name()] then
-    hs.eventtap.keyStroke({ "ctrl" }, "l", 0)
+    -- Claude Code has no single clear-input key (Ctrl+L is a redraw). Per
+    -- line: Ctrl+K kills to end, Ctrl+U to start, Backspace joins the
+    -- previous line. Repeating covers multi-line drafts from any cursor
+    -- position; extra rounds on an empty box do nothing. Verified 2.1.318.
+    for _ = 1, CLEAR_MAX_LINES do
+      hs.eventtap.keyStroke({ "ctrl" }, "k", 0)
+      hs.eventtap.keyStroke({ "ctrl" }, "u", 0)
+      hs.eventtap.keyStroke({}, "delete", 0)
+    end
   else
     hs.eventtap.keyStroke({ "cmd" }, "a", 0)
     hs.eventtap.keyStroke({}, "delete", 0)
@@ -45,6 +64,7 @@ local MODES = {
     up = tap({}, "up"), down = tap({}, "down"), select = tap({}, "return"),
     yes = tap({}, "return"), no = tap({}, "escape"),
     a = tap({ "shift" }, "tab"), -- cycle permission mode
+    keys = { [2] = "Enter", [3] = "Esc", [5] = "⇧Tab" },
   },
   {
     name = "iterm", label = "🖥️ ITERM", color = { red = 0.45, green = 0.45, blue = 0.5 },
@@ -52,6 +72,7 @@ local MODES = {
     yes = tap({ "cmd", "shift" }, "["), -- previous iTerm tab
     no = tap({ "cmd", "shift" }, "]"),  -- next iTerm tab
     a = tap({ "cmd" }, "]"),            -- next split pane
+    keys = { [2] = "◀Tab", [3] = "Tab▶", [5] = "Pane" },
   },
   {
     name = "browser", label = "🌐 BROWSER", color = { red = 0.25, green = 0.5, blue = 0.9 },
@@ -59,12 +80,26 @@ local MODES = {
     yes = tap({ "ctrl", "shift" }, "tab"), -- previous tab
     no = tap({ "ctrl" }, "tab"),           -- next tab
     a = tap({ "cmd" }, "["),               -- back
+    clear = tap({ "cmd" }, "w"),           -- 4: close tab (instead of clear text)
+    keys = { [2] = "◀Tab", [3] = "Tab▶", [4] = "Close", [5] = "Back" },
+  },
+  {
+    name = "meet", label = "📹 MEET", color = { red = 0.1, green = 0.6, blue = 0.3 },
+    -- Google Meet shortcuts; the Meet tab must be in front. Talk (1) is the
+    -- mic, latched: tap to mute, tap to unmute. Holding 1 still dictates.
+    up = scroll(3), down = scroll(-3), select = tap({}, "return"),
+    tap = tap({ "cmd" }, "d"),          -- 1: toggle microphone
+    yes = tap({ "ctrl", "cmd" }, "h"),  -- 2: raise / lower hand
+    no = tap({ "cmd" }, "e"),           -- 3: toggle camera
+    a = tap({ "ctrl", "cmd" }, "c"),    -- 5: captions on / off
+    keys = { [1] = "Mic", [2] = "Hand", [3] = "Cam", [5] = "Captions" },
   },
   {
     name = "apps", label = "🧪 APPS", color = { red = 0.3, green = 0.7, blue = 0.4 },
     up = tap({}, "up"), down = tap({}, "down"), select = tap({}, "return"),
     yes = tap({}, "return"), no = tap({}, "escape"),
     a = tap({}, "tab"),
+    keys = { [2] = "Enter", [3] = "Esc", [5] = "Tab" },
   },
 }
 
@@ -75,11 +110,26 @@ local SELECT_KEYS = {
   { button = 2, mode = "iterm" },
   { button = 3, mode = "browser" },
   { button = 4, mode = "apps" },
+  { button = 5, mode = "meet" },
 }
 
-local state = { index = 1, menu = nil, talkTimer = nil, hotkeys = {}, lastModeTap = nil, selecting = false }
+-- The knob has its own mode, independent of the button mode, picked via
+-- SELECT → knob press → turn → knob press. "nav" = whatever the button mode
+-- defines for the knob (arrows or scroll); the others are the keyboard's
+-- own media keys. A knob mode may define `press`; otherwise the knob press
+-- is the button mode's `select`. Clockwise = up/louder/brighter.
+local KNOB_MODES = {
+  { name = "nav", icon = "⇅" },
+  { name = "volume", icon = "🔊", ccw = systemKey("SOUND_DOWN"), cw = systemKey("SOUND_UP"),
+    press = systemKey("PLAY") }, -- play/pause, like a media knob
+  { name = "brightness", icon = "☀️", ccw = systemKey("BRIGHTNESS_DOWN"), cw = systemKey("BRIGHTNESS_UP") },
+}
+local KNOB_SETTINGS_KEY = "minikeyboard.knob"
+
+local state = { index = 1, knob = 1, menu = nil, talkTimer = nil, hotkeys = {}, lastModeTap = nil, selecting = false }
 
 local function currentMode() return MODES[state.index] end
+local function currentKnob() return KNOB_MODES[state.knob] end
 
 local setMode -- defined below; the menu needs it
 
@@ -103,16 +153,78 @@ local function drawMarker()
         if m.name == k.mode then parts[#parts + 1] = k.button .. "=" .. m.label:gsub("^%S+ ", "") end
       end
     end
-    state.menu:setTitle("🔀 " .. table.concat(parts, "  "))
+    state.menu:setTitle("🔀 " .. table.concat(parts, "  ") .. "  knob=KNOB")
     return
   end
-  state.menu:setTitle(currentMode().label .. (state.dictating and " 🎤" or ""))
+  if state.knobSelecting then
+    local parts = {}
+    for i, k in ipairs(KNOB_MODES) do
+      local item = k.icon .. " " .. k.name
+      parts[#parts + 1] = (i == state.knob) and ("[" .. item .. "]") or item
+    end
+    state.menu:setTitle("🎛 " .. table.concat(parts, "  "))
+    return
+  end
+  local mode = currentMode()
+  local title = mode.label .. " " .. currentKnob().icon .. (state.dictating and " 🎤" or "")
+  if SHOW_LEGEND then
+    local keys = { [1] = "Talk", [4] = "Clear" } -- same in every mode
+    for b, name in pairs(mode.keys or {}) do keys[b] = name end
+    local parts = {}
+    for b = 1, 5 do parts[#parts + 1] = b .. "·" .. (keys[b] or "–") end
+    title = title .. "   " .. table.concat(parts, " ")
+  end
+  state.menu:setTitle(title)
 end
 
 setMode = function(index)
   state.index = index
   hs.settings.set(SETTINGS_KEY, currentMode().name)
   drawMarker()
+end
+
+local function setKnob(index)
+  state.knob = index
+  hs.settings.set(KNOB_SETTINGS_KEY, currentKnob().name)
+  drawMarker()
+end
+
+-- Knob-mode picker: entered from SELECT by pressing the knob. Turning the
+-- knob then steps through KNOB_MODES (applied live, shown in the menu bar);
+-- knob press, Mode, or KNOB_SELECT_TIMEOUT_SECONDS of nothing leaves it.
+local KNOB_SELECT_TIMEOUT_SECONDS = 5
+
+local function knobSelectEnd()
+  state.knobSelecting = false
+  if state.knobSelectTimer then state.knobSelectTimer:stop(); state.knobSelectTimer = nil end
+  drawMarker()
+end
+
+local function knobSelectTouch()
+  if state.knobSelectTimer then state.knobSelectTimer:stop() end
+  state.knobSelectTimer = hs.timer.doAfter(KNOB_SELECT_TIMEOUT_SECONDS, knobSelectEnd)
+end
+
+local function knobSelectBegin()
+  state.knobSelecting = true
+  knobSelectTouch()
+  drawMarker()
+end
+
+-- Knob turn: while picking, steps the knob mode. Otherwise the knob mode
+-- wins unless it's "nav", which defers to the button mode's up/down.
+local function knobTurn(direction) -- "ccw" or "cw"
+  return function()
+    if state.knobSelecting then
+      local step = (direction == "cw") and 1 or -1
+      setKnob((state.knob - 1 + step) % #KNOB_MODES + 1)
+      knobSelectTouch()
+      return
+    end
+    local k = currentKnob()
+    if k[direction] then k[direction]() return end
+    currentMode()[direction == "ccw" and "up" or "down"]()
+  end
 end
 
 local function cycleMode()
@@ -145,6 +257,8 @@ local function modeTap()
   local now = hs.timer.secondsSinceEpoch()
   if state.selecting then
     selectEnd()
+  elseif state.knobSelecting then
+    knobSelectEnd()
   elseif state.lastModeTap and now - state.lastModeTap < DOUBLE_TAP_SECONDS then
     state.lastModeTap = nil
     selectBegin()
@@ -156,6 +270,11 @@ end
 -- Called by every button. Returns true if the press was consumed by SELECT.
 local function select(button)
   if not state.selecting then return false end
+  if button == "knob" then -- hand over to the knob-mode picker
+    selectEnd()
+    knobSelectBegin()
+    return true
+  end
   for _, k in ipairs(SELECT_KEYS) do
     if k.button == button then
       for i, m in ipairs(MODES) do
@@ -255,7 +374,7 @@ local function talkRelease()
     drawMarker()
     recordStop()
   else
-    hs.eventtap.keyStroke({}, "return", 0) -- short tap: send
+    (currentMode().tap or tap({}, "return"))() -- short tap: send, unless the mode overrides it
   end
 end
 
@@ -276,6 +395,10 @@ local saved = hs.settings.get(SETTINGS_KEY)
 for i, m in ipairs(MODES) do
   if m.name == saved then state.index = i end
 end
+local savedKnob = hs.settings.get(KNOB_SETTINGS_KEY)
+for i, k in ipairs(KNOB_MODES) do
+  if k.name == savedKnob then state.knob = i end
+end
 
 -- Talk (F13) is handled by an eventtap, not a hotkey, so the key events are
 -- swallowed before any app or input method (macOS Dictation) sees them.
@@ -295,12 +418,16 @@ state.talkTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown, hs.eventtap.e
 end):start()
 bind({}, "f18", unlessSelecting(2, role("yes")))                  -- Yes (prev tab in Browser)
 bind({ "ctrl", "alt" }, "f16", nil, unlessSelecting(3, role("no"))) -- No (next tab in Browser)
-bind({}, "f16", unlessSelecting(4, clearText))                  -- Clear typed text
+bind({}, "f16", unlessSelecting(4, function() (currentMode().clear or clearText)() end)) -- Clear typed text, unless the mode overrides
 bind({}, "f17", unlessSelecting(5, role("a")))                      -- Mode-specific A
 bind({ "ctrl", "alt" }, "f19", nil, modeTap)           -- Mode: double-tap = SELECT (single tap reserved)
-bind({}, "f19", role("up"))                            -- Knob left
-bind({}, "f20", role("down"))                          -- Knob right
-bind({ "ctrl", "alt" }, "f20", nil, unlessSelecting("knob", role("select"))) -- Knob press (on release, so ctrl/alt are up)
+bind({}, "f19", knobTurn("ccw"))                       -- Knob left: nav up / quieter / dimmer
+bind({}, "f20", knobTurn("cw"))                        -- Knob right: nav down / louder / brighter
+bind({ "ctrl", "alt" }, "f20", nil, function()         -- Knob press: finish picking, else knob-mode press, else mode select
+  if state.knobSelecting then knobSelectEnd() return end
+  if select("knob") then return end
+  (currentKnob().press or currentMode().select)()
+end)
 -- While Mode is held the pad may still hold Ctrl+Alt, so catch those variants too.
 
 drawMarker()

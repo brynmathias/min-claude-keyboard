@@ -28,13 +28,15 @@ Two parts:
 
 F14/F15 are not used: macOS grabs them for screen brightness before
 Hammerspoon sees them.
-| Knob left     | F19            | Up / scroll up  |
-| Knob right    | F20            | Down / scroll down |
-| Knob press    | ctrl-alt-F20   | Select          |
+| Knob left     | F19            | Knob mode: nav up / quieter / dimmer |
+| Knob right    | F20            | Knob mode: nav down / louder / brighter |
+| Knob press    | ctrl-alt-F20   | Select / knob-mode press |
 
 Talk, Clear and Mode behave the same in every mode, for muscle memory.
 Button 4 clears typed text based on the app in front (not the mode):
-Ctrl+L in a terminal (Claude Code `chat:clearInput`), else Cmd+A, Delete.
+In a terminal (Claude Code) it kills the draft line by line, up to 12 lines,
+with Ctrl+K, Ctrl+U, Backspace, since Claude Code has no single clear-input key
+(Ctrl+L is a screen redraw). Elsewhere: Cmd+A, Delete.
 
 ### Modes
 
@@ -62,13 +64,19 @@ while recording. If a release is ever missed, the next Talk press stops it.
   (Cmd+Shift+[), No = next tab (Cmd+Shift+]), A = next split pane
   (Cmd+], wraps round). Uses iTerm2's default shortcuts.
 - **Browser** — knob = scroll, press = Enter, Yes = previous tab,
-  No = next tab, A = back.
+  No = next tab, A = back, Clear (4) = close tab (Cmd+W). A mode may set
+  `clear` to override button 4; default is clear typed text.
+- **Meet** — Google Meet, tab must be in front. 1 (tap) = toggle mic
+  (Cmd+D, latched: tap to mute, tap to unmute; hold still dictates),
+  2 = raise/lower hand (Ctrl+Cmd+H), 3 = toggle camera (Cmd+E),
+  5 = captions (Ctrl+Cmd+C), knob = scroll, press = Enter. A mode may set
+  `tap` to override what a short tap of 1 does; default is Enter.
 - **Apps** — knob = Up/Down arrows, press = Enter, A = Tab.
 
 ### Switching modes
 
 - **Double-tap Mode**: enter SELECT. The menu bar shows
-  `🔀 1=CLAUDE 2=ITERM 3=BROWSER 4=APPS`. Press that button
+  `🔀 1=CLAUDE 2=ITERM 3=BROWSER 4=APPS 5=MEET knob=KNOB`. Press that button
   buttons to switch. Any other button, button 6 again, or 5 s of nothing,
   cancels and leaves the mode as it was.
 - **Single tap Mode**: reserved, does nothing yet.
@@ -79,9 +87,30 @@ Why not hold-Mode chords: the pad sends any button that has modifiers
 physically held. Plain keys (Talk, Yes, Clear, A, knob turns) are held
 properly with autorepeat. So Mode can never be "held" on the host side.
 
+### Knob modes (independent of the button mode)
+
+The knob has its own mode, shown as an icon after the button mode in the
+menu bar. To change it: double-tap 6 (SELECT), press the knob, turn the
+knob to step through the list (applied live, current one in brackets),
+press the knob to finish. 6 or 5 s of nothing also finishes.
+Clockwise is always up / louder / brighter.
+
+- **nav ⇅** — whatever the button mode defines (arrows in Claude, iTerm and
+  Apps; scroll in Browser and Meet). Press = the button mode's select.
+- **volume 🔊** — macOS volume via the keyboard's own media keys (HUD shows).
+  Press = play/pause.
+- **brightness ☀️** — screen brightness, likewise. Press = mode's select.
+
+A knob mode may define its own `press`; otherwise the press falls through
+to the button mode. Survives reload like the button mode.
+
 ### Indicator
 
-The current mode shows in the menu bar (with 🎤 while recording).
+The current mode and knob mode show in the menu bar (with 🎤 while recording),
+followed by what buttons 1–5 do in that mode, e.g.
+`🤖 CLAUDE ⇅   1·Talk 2·Enter 3·Esc 4·Clear 5·⇧Tab`. Each mode's `keys`
+table supplies the labels; 1 and 4 are the same everywhere.
+`SHOW_LEGEND = false` in `init.lua` hides the legend.
 Clicking it lists the modes. No on-screen overlay.
 
 Adding a mode = adding one table entry in `init.lua`.
@@ -89,10 +118,12 @@ Adding a mode = adding one table entry in `init.lua`.
 ## Acceptance criteria
 
 1. Double-tapping Mode shows the SELECT prompt in the menu bar; pressing
-   button 1 / 2 / 3 / 4 switches to Claude / iTerm / Browser / Apps and
+   button 1 / 2 / 3 / 4 / 5 switches to Claude / iTerm / Browser / Apps / Meet and
    the menu bar item updates within 100 ms.
-2. In Claude mode, turning the knob moves the highlighted option in an
-   AskUserQuestion prompt; pressing the knob selects it.
+2. In Claude mode with the knob in nav, turning the knob moves the
+   highlighted option in an AskUserQuestion prompt; pressing the knob
+   selects it. SELECT → knob press → turn → knob press changes the knob
+   mode and the icon updates.
 3. Yes sends Enter, No sends Esc, in every mode.
 4. Holding Talk records (macOS Dictation or Claude Code voice, per
    `TALK_BACKEND`); releasing stops it. A short tap sends Enter.

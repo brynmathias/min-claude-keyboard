@@ -37,7 +37,7 @@ Top row 1 2 3, bottom row 4 5 6, knob on the side.
 |---|---|
 | 1 | Talk: tap = Enter, hold = push-to-talk |
 | 4 | Clear typed text |
-| 6 | Mode: double-tap = pick a mode (1–4), single tap reserved |
-| Knob | Up/down, press = select |
+| 6 | Mode: double-tap = pick a mode (1–5), single tap reserved |
+| Knob | Turn = nav / volume / brightness (own mode, picked via 6 6 + knob); press = select, or play/pause in volume |
 
 Buttons 2, 3, 5 and the knob are mode-specific; see the design doc.
